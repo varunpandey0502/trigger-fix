@@ -108,38 +108,159 @@ export class TriggerFixer {
 
     const posData: PositionPoint[] = [];
 
+    // Determine format by checking header line
+    const headerLine = fileContent
+      .split("\n")
+      .find((line) => line.includes("latitude") && line.includes("longitude"));
+
+    const isDmsFormat =
+      headerLine?.includes("latitude(d')") ||
+      headerLine?.includes('latitude(d")');
+    const isDecimalFormat = headerLine?.includes("latitude(deg)");
+
     for (const line of lines) {
       const parts = line.trim().split(/\s+/);
-      if (parts.length < 19) continue;
+      if (parts.length < 8) continue;
 
-      const point: PositionPoint = {
-        week: parseInt(parts[0]),
-        seconds: parseFloat(parts[1]),
-        lat_d: parseInt(parts[2]),
-        lat_m: parseInt(parts[3]),
-        lat_s: parseFloat(parts[4]),
-        lon_d: parseInt(parts[5]),
-        lon_m: parseInt(parts[6]),
-        lon_s: parseFloat(parts[7]),
-        height: parseFloat(parts[8]),
-        Q: parseInt(parts[9]),
-        ns: parseInt(parts[10]),
-        sdn: parseFloat(parts[11]),
-        sde: parseFloat(parts[12]),
-        sdu: parseFloat(parts[13]),
-        sdne: parseFloat(parts[14]),
-        sdeu: parseFloat(parts[15]),
-        sdun: parseFloat(parts[16]),
-        age: parseFloat(parts[17]),
-        ratio: parseFloat(parts[18]),
-      };
+      let point: PositionPoint;
 
-      // Convert GPS time to datetime
-      point.timestamp = this.gpsToDatetime(point.week, point.seconds);
+      if (isDmsFormat) {
+        // Original DMS format
+        point = {
+          week: parseInt(parts[0]),
+          seconds: parseFloat(parts[1]),
+          lat_d: parseInt(parts[2]),
+          lat_m: parseInt(parts[3]),
+          lat_s: parseFloat(parts[4]),
+          lon_d: parseInt(parts[5]),
+          lon_m: parseInt(parts[6]),
+          lon_s: parseFloat(parts[7]),
+          height: parseFloat(parts[8]),
+          Q: parseInt(parts[9]),
+          ns: parseInt(parts[10]),
+          sdn: parseFloat(parts[11]),
+          sde: parseFloat(parts[12]),
+          sdu: parseFloat(parts[13]),
+          sdne: parseFloat(parts[14]),
+          sdeu: parseFloat(parts[15]),
+          sdun: parseFloat(parts[16]),
+          age: parseFloat(parts[17]),
+          ratio: parseFloat(parts[18]),
+        };
 
-      // Convert lat/lon from DMS to decimal
-      point.lat = this.dmsToDecimal(point.lat_d, point.lat_m, point.lat_s);
-      point.lon = this.dmsToDecimal(point.lon_d, point.lon_m, point.lon_s);
+        // Convert GPS time to datetime
+        point.timestamp = this.gpsToDatetime(point.week, point.seconds);
+
+        // Convert lat/lon from DMS to decimal
+        point.lat = this.dmsToDecimal(point.lat_d, point.lat_m, point.lat_s);
+        point.lon = this.dmsToDecimal(point.lon_d, point.lon_m, point.lon_s);
+      } else if (isDecimalFormat) {
+        // Decimal degrees format
+        // Format: YYYY/MM/DD HH:MM:SS.SSS lat(deg) lon(deg) height Q ns ...
+        const dateTimeParts = parts.slice(0, 2);
+        const gpstStr = dateTimeParts.join(" ");
+
+        // Parse GPST date string to get week and seconds
+        const { week, seconds } = this.parseGpstDateString(gpstStr);
+
+        point = {
+          week,
+          seconds,
+          lat_d: 0, // These will be calculated later if needed
+          lat_m: 0,
+          lat_s: 0,
+          lon_d: 0,
+          lon_m: 0,
+          lon_s: 0,
+          height: parseFloat(parts[4]),
+          Q: parseInt(parts[5]),
+          ns: parseInt(parts[6]),
+          sdn: parseFloat(parts[7]),
+          sde: parseFloat(parts[8]),
+          sdu: parseFloat(parts[9]),
+          sdne: parseFloat(parts[10]),
+          sdeu: parseFloat(parts[11]),
+          sdun: parseFloat(parts[12]),
+          age: parseFloat(parts[13]),
+          ratio: parseFloat(parts[14]),
+        };
+
+        // Decimal degrees are directly provided
+        point.lat = parseFloat(parts[2]);
+        point.lon = parseFloat(parts[3]);
+
+        // Convert decimal to DMS for consistency
+        const latDms = this.decimalToDms(point.lat);
+        const lonDms = this.decimalToDms(point.lon);
+
+        point.lat_d = latDms.d;
+        point.lat_m = latDms.m;
+        point.lat_s = latDms.s;
+        point.lon_d = lonDms.d;
+        point.lon_m = lonDms.m;
+        point.lon_s = lonDms.s;
+
+        // Convert GPS time to datetime
+        point.timestamp = this.gpsToDatetime(point.week, point.seconds);
+      } else {
+        // Unknown format, try to handle generically
+        console.warn(
+          "Unknown position data format, attempting to parse generically"
+        );
+
+        // Check if first field looks like a GPS week or a date
+        const isDateFormat = parts[0].includes("/") || parts[0].includes("-");
+
+        if (isDateFormat) {
+          // Assume date format: YYYY/MM/DD HH:MM:SS.SSS
+          const { week, seconds } = this.parseGpstDateString(
+            parts.slice(0, 2).join(" ")
+          );
+
+          point = {
+            week,
+            seconds,
+            // Assume the next two fields are lat/lon in decimal
+            lat: parseFloat(parts[2]),
+            lon: parseFloat(parts[3]),
+            height: parseFloat(parts[4]),
+            // Fill in other fields as available
+            Q: parts.length > 5 ? parseInt(parts[5]) : 0,
+            ns: parts.length > 6 ? parseInt(parts[6]) : 0,
+          };
+
+          // Convert decimal to DMS
+          const latDms = this.decimalToDms(point.lat!);
+          const lonDms = this.decimalToDms(point.lon!);
+
+          point.lat_d = latDms.d;
+          point.lat_m = latDms.m;
+          point.lat_s = latDms.s;
+          point.lon_d = lonDms.d;
+          point.lon_m = lonDms.m;
+          point.lon_s = lonDms.s;
+        } else {
+          // Assume original format with GPS week and seconds
+          point = {
+            week: parseInt(parts[0]),
+            seconds: parseFloat(parts[1]),
+            lat_d: parseInt(parts[2]),
+            lat_m: parseInt(parts[3]),
+            lat_s: parseFloat(parts[4]),
+            lon_d: parseInt(parts[5]),
+            lon_m: parseInt(parts[6]),
+            lon_s: parseFloat(parts[7]),
+            height: parseFloat(parts[8]),
+          };
+
+          // Convert DMS to decimal
+          point.lat = this.dmsToDecimal(point.lat_d, point.lat_m, point.lat_s);
+          point.lon = this.dmsToDecimal(point.lon_d, point.lon_m, point.lon_s);
+        }
+
+        // Set timestamp
+        point.timestamp = this.gpsToDatetime(point.week, point.seconds);
+      }
 
       posData.push(point);
     }
@@ -157,34 +278,166 @@ export class TriggerFixer {
 
     const eventsData: EventPoint[] = [];
 
+    // Determine format by checking header line
+    const headerLine = fileContent
+      .split("\n")
+      .find((line) => line.includes("latitude") && line.includes("longitude"));
+
+    const isDmsFormat =
+      headerLine?.includes("latitude(d')") ||
+      headerLine?.includes('latitude(d")');
+    const isDecimalFormat = headerLine?.includes("latitude(deg)");
+
     for (const line of lines) {
       const parts = line.trim().split(/\s+/);
       if (parts.length < 8) continue;
 
-      const event: EventPoint = {
-        week: parseInt(parts[0]),
-        seconds: parseFloat(parts[1]),
-        lat_d: parseInt(parts[2]),
-        lat_m: parseInt(parts[3]),
-        lat_s: parseFloat(parts[4]),
-        lon_d: parseInt(parts[5]),
-        lon_m: parseInt(parts[6]),
-        lon_s: parseFloat(parts[7]),
-        height: parts.length > 8 ? parseFloat(parts[8]) : 0,
-        interpolated: false,
-      };
+      let event: EventPoint;
 
-      // Convert GPS time to datetime
-      event.timestamp = this.gpsToDatetime(event.week, event.seconds);
+      if (isDmsFormat) {
+        // Original DMS format
+        event = {
+          week: parseInt(parts[0]),
+          seconds: parseFloat(parts[1]),
+          lat_d: parseInt(parts[2]),
+          lat_m: parseInt(parts[3]),
+          lat_s: parseFloat(parts[4]),
+          lon_d: parseInt(parts[5]),
+          lon_m: parseInt(parts[6]),
+          lon_s: parseFloat(parts[7]),
+          height: parts.length > 8 ? parseFloat(parts[8]) : 0,
+          interpolated: false,
+        };
 
-      // Convert lat/lon from DMS to decimal
-      event.lat = this.dmsToDecimal(event.lat_d, event.lat_m, event.lat_s);
-      event.lon = this.dmsToDecimal(event.lon_d, event.lon_m, event.lon_s);
+        // Convert GPS time to datetime
+        event.timestamp = this.gpsToDatetime(event.week, event.seconds);
+
+        // Convert lat/lon from DMS to decimal
+        event.lat = this.dmsToDecimal(event.lat_d, event.lat_m, event.lat_s);
+        event.lon = this.dmsToDecimal(event.lon_d, event.lon_m, event.lon_s);
+      } else if (isDecimalFormat) {
+        // Decimal degrees format
+        // Format: YYYY/MM/DD HH:MM:SS.SSS lat(deg) lon(deg) height Q ns ...
+        const dateTimeParts = parts.slice(0, 2);
+        const gpstStr = dateTimeParts.join(" ");
+
+        // Parse GPST date string to get week and seconds
+        const { week, seconds } = this.parseGpstDateString(gpstStr);
+
+        event = {
+          week,
+          seconds,
+          lat_d: 0,
+          lat_m: 0,
+          lat_s: 0,
+          lon_d: 0,
+          lon_m: 0,
+          lon_s: 0,
+          height: parseFloat(parts[4]),
+          interpolated: false,
+        };
+
+        // Decimal degrees are directly provided
+        event.lat = parseFloat(parts[2]);
+        event.lon = parseFloat(parts[3]);
+
+        // Convert decimal to DMS for consistency
+        const latDms = this.decimalToDms(event.lat);
+        const lonDms = this.decimalToDms(event.lon);
+
+        event.lat_d = latDms.d;
+        event.lat_m = latDms.m;
+        event.lat_s = latDms.s;
+        event.lon_d = lonDms.d;
+        event.lon_m = lonDms.m;
+        event.lon_s = lonDms.s;
+
+        // Convert GPS time to datetime
+        event.timestamp = this.gpsToDatetime(event.week, event.seconds);
+      } else {
+        // Unknown format, try to handle generically
+        console.warn(
+          "Unknown event data format, attempting to parse generically"
+        );
+
+        // Check if first field looks like a GPS week or a date
+        const isDateFormat = parts[0].includes("/") || parts[0].includes("-");
+
+        if (isDateFormat) {
+          // Assume date format: YYYY/MM/DD HH:MM:SS.SSS
+          const { week, seconds } = this.parseGpstDateString(
+            parts.slice(0, 2).join(" ")
+          );
+
+          event = {
+            week,
+            seconds,
+            // Assume the next two fields are lat/lon in decimal
+            lat: parseFloat(parts[2]),
+            lon: parseFloat(parts[3]),
+            height: parseFloat(parts[4]),
+            interpolated: false,
+          };
+
+          // Convert decimal to DMS
+          const latDms = this.decimalToDms(event.lat!);
+          const lonDms = this.decimalToDms(event.lon!);
+
+          event.lat_d = latDms.d;
+          event.lat_m = latDms.m;
+          event.lat_s = latDms.s;
+          event.lon_d = lonDms.d;
+          event.lon_m = lonDms.m;
+          event.lon_s = lonDms.s;
+        } else {
+          // Assume original format with GPS week and seconds
+          event = {
+            week: parseInt(parts[0]),
+            seconds: parseFloat(parts[1]),
+            lat_d: parseInt(parts[2]),
+            lat_m: parseInt(parts[3]),
+            lat_s: parseFloat(parts[4]),
+            lon_d: parseInt(parts[5]),
+            lon_m: parseInt(parts[6]),
+            lon_s: parseFloat(parts[7]),
+            height: parts.length > 8 ? parseFloat(parts[8]) : 0,
+            interpolated: false,
+          };
+
+          // Convert DMS to decimal
+          event.lat = this.dmsToDecimal(event.lat_d, event.lat_m, event.lat_s);
+          event.lon = this.dmsToDecimal(event.lon_d, event.lon_m, event.lon_s);
+        }
+
+        // Set timestamp
+        event.timestamp = this.gpsToDatetime(event.week, event.seconds);
+      }
 
       eventsData.push(event);
     }
 
     return eventsData;
+  }
+
+  /**
+   * Parse GPST date string to get GPS week and seconds
+   * Format: YYYY/MM/DD HH:MM:SS.SSS
+   */
+  parseGpstDateString(gpstStr: string): { week: number; seconds: number } {
+    const date = new Date(gpstStr);
+
+    // Calculate milliseconds since GPS epoch
+    const millisecondsSinceEpoch =
+      date.getTime() - this.config.gpsEpoch.getTime();
+
+    // Calculate GPS week
+    const week = Math.floor(millisecondsSinceEpoch / (7 * 24 * 60 * 60 * 1000));
+
+    // Calculate seconds of week
+    const secondsOfWeek =
+      (millisecondsSinceEpoch % (7 * 24 * 60 * 60 * 1000)) / 1000;
+
+    return { week, seconds: secondsOfWeek };
   }
 
   /**
