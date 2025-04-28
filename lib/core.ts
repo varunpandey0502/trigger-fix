@@ -26,7 +26,7 @@ export const DEFAULT_CONFIG: TriggerFixConfig = {
   windowSize: 5,
   maxIntervalFactor: 1.5,
   minIntervalFactor: 0.5,
-  minDistanceFactor: 0.7,
+  minDistanceFactor: 0.8,
   pathColor: "#8884d8",
   pathAlpha: 0.6,
   triggerColor: "#ff7300",
