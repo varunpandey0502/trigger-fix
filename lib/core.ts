@@ -535,12 +535,6 @@ export class TriggerFixer {
     // Sort events by time
     const sortedEvents = [...eventsData].sort((a, b) => a.seconds - b.seconds);
 
-    // Calculate time intervals between consecutive triggers
-    const intervals: number[] = [];
-    for (let i = 0; i < sortedEvents.length - 1; i++) {
-      intervals.push(sortedEvents[i + 1].seconds - sortedEvents[i].seconds);
-    }
-
     // Calculate distances between consecutive triggers
     const distances: number[] = [];
     for (let i = 0; i < sortedEvents.length - 1; i++) {
@@ -551,34 +545,32 @@ export class TriggerFixer {
         sortedEvents[i + 1].lon!
       );
       distances.push(dist);
+      // Store distance in the event point for later use
+      sortedEvents[i + 1].distance_from_prev = dist;
     }
 
     // Initialize list to store interpolated triggers
     const interpolatedTriggers: EventPoint[] = [];
 
     // Process each window
-    for (let i = 0; i < intervals.length - this.config.windowSize + 1; i++) {
-      // Get current window of intervals and distances
-      const timeWindow = intervals.slice(i, i + this.config.windowSize);
+    for (let i = 0; i < distances.length - this.config.windowSize + 1; i++) {
+      // Get current window of distances
       const distWindow = distances.slice(i, i + this.config.windowSize);
 
-      // Calculate median interval and distance in this window
-      const medianInterval = this.median(timeWindow);
+      // Calculate median distance in this window
       const medianDistance = this.median(distWindow);
-      const minAcceptableDistance =
-        medianDistance * this.config.minDistanceFactor;
 
-      // Define acceptable interval range
-      const maxInterval = medianInterval * this.config.maxIntervalFactor;
-      const minInterval = medianInterval * this.config.minIntervalFactor;
+      // Define acceptable distance range
+      const maxDistance = medianDistance * this.config.maxIntervalFactor;
+      const minDistance = medianDistance * this.config.minIntervalFactor;
 
-      // Check if the interval after the window is too large (indicating missing triggers)
-      if (i + this.config.windowSize < intervals.length) {
-        const currentInterval = intervals[i + this.config.windowSize];
+      // Check if the distance after the window is too large (indicating missing triggers)
+      if (i + this.config.windowSize < distances.length) {
+        const currentDistance = distances[i + this.config.windowSize];
 
-        if (currentInterval > maxInterval) {
+        if (currentDistance > maxDistance) {
           // Calculate how many triggers are missing
-          const numMissing = Math.round(currentInterval / medianInterval) - 1;
+          const numMissing = Math.round(currentDistance / medianDistance) - 1;
 
           if (numMissing > 0) {
             // Get start and end points for interpolation
@@ -591,59 +583,48 @@ export class TriggerFixer {
               lat: sortedEvents[startIdx].lat!,
               lon: sortedEvents[startIdx].lon!,
               height: sortedEvents[startIdx].height,
+              seconds: startTime,
             };
 
-            // Generate evenly spaced timestamps for missing triggers
-            const step = (endTime - startTime) / (numMissing + 1);
-            const missingTimes: number[] = [];
-            for (let j = 1; j <= numMissing; j++) {
-              missingTimes.push(startTime + j * step);
-            }
+            const endPos = {
+              lat: sortedEvents[startIdx + 1].lat!,
+              lon: sortedEvents[startIdx + 1].lon!,
+              height: sortedEvents[startIdx + 1].height,
+              seconds: endTime,
+            };
 
-            // Track the last valid position for distance checking
-            let lastValidPos = startPos;
+            // Generate evenly spaced positions for missing triggers
+            const interpolatedPositions = this.interpolatePositionsByDistance(
+              startPos,
+              endPos,
+              numMissing,
+              posData
+            );
 
-            // Interpolate positions for each missing timestamp
-            for (const ts of missingTimes) {
-              const pos = this.interpolatePosition(posData, ts);
-              if (pos) {
-                // Check distance from last valid position
-                const distFromLast = this.haversineDistance(
-                  lastValidPos.lat,
-                  lastValidPos.lon,
-                  pos.lat!,
-                  pos.lon!
-                );
+            // Add interpolated triggers
+            for (const pos of interpolatedPositions) {
+              // Get the GPS week from nearby points
+              const week = sortedEvents[startIdx].week;
 
-                // Only add if distance is acceptable
-                if (distFromLast >= minAcceptableDistance) {
-                  // Get the GPS week from nearby points
-                  const week = sortedEvents[startIdx].week;
+              // Convert decimal lat/lon to DMS
+              const latDms = this.decimalToDms(pos.lat);
+              const lonDms = this.decimalToDms(pos.lon);
 
-                  interpolatedTriggers.push({
-                    week,
-                    seconds: ts,
-                    lat_d: 0, // These would be calculated if needed for export
-                    lat_m: 0,
-                    lat_s: 0,
-                    lon_d: 0,
-                    lon_m: 0,
-                    lon_s: 0,
-                    height: pos.height,
-                    lat: pos.lat,
-                    lon: pos.lon,
-                    interpolated: true,
-                    distance_from_prev: distFromLast,
-                  });
-
-                  // Update last valid position
-                  lastValidPos = {
-                    lat: pos.lat!,
-                    lon: pos.lon!,
-                    height: pos.height,
-                  };
-                }
-              }
+              interpolatedTriggers.push({
+                week,
+                seconds: pos.seconds,
+                lat_d: latDms.d,
+                lat_m: latDms.m,
+                lat_s: latDms.s,
+                lon_d: lonDms.d,
+                lon_m: lonDms.m,
+                lon_s: lonDms.s,
+                height: pos.height,
+                lat: pos.lat,
+                lon: pos.lon,
+                interpolated: true,
+                distance_from_prev: pos.distance_from_prev,
+              });
             }
           }
         }
@@ -651,6 +632,157 @@ export class TriggerFixer {
     }
 
     return interpolatedTriggers;
+  }
+
+  /**
+   * Interpolate positions by distance between two points
+   */
+  interpolatePositionsByDistance(
+    startPos: { lat: number; lon: number; height: number; seconds: number },
+    endPos: { lat: number; lon: number; height: number; seconds: number },
+    numPoints: number,
+    posData: PositionPoint[]
+  ): Array<{
+    lat: number;
+    lon: number;
+    height: number;
+    seconds: number;
+    distance_from_prev: number;
+  }> {
+    const result = [];
+
+    // Calculate total distance between start and end
+    const totalDistance = this.haversineDistance(
+      startPos.lat,
+      startPos.lon,
+      endPos.lat,
+      endPos.lon
+    );
+
+    // Calculate segment distance
+    const segmentDistance = totalDistance / (numPoints + 1);
+
+    // Find all position points between start and end times
+    const relevantPosData = posData
+      .filter(
+        (p) => p.seconds >= startPos.seconds && p.seconds <= endPos.seconds
+      )
+      .sort((a, b) => a.seconds - b.seconds);
+
+    if (relevantPosData.length < 2) {
+      // Not enough position data, fall back to linear interpolation
+      for (let i = 1; i <= numPoints; i++) {
+        const ratio = i / (numPoints + 1);
+        const lat = startPos.lat + ratio * (endPos.lat - startPos.lat);
+        const lon = startPos.lon + ratio * (endPos.lon - startPos.lon);
+        const height =
+          startPos.height + ratio * (endPos.height - startPos.height);
+        const seconds =
+          startPos.seconds + ratio * (endPos.seconds - startPos.seconds);
+
+        result.push({
+          lat,
+          lon,
+          height,
+          seconds,
+          distance_from_prev:
+            i === 1
+              ? segmentDistance
+              : this.haversineDistance(
+                  result[result.length - 1].lat,
+                  result[result.length - 1].lon,
+                  lat,
+                  lon
+                ),
+        });
+      }
+      return result;
+    }
+
+    // Calculate cumulative distances along the path
+    let cumulativeDistances = [0]; // Start with 0 for the first point
+    for (let i = 1; i < relevantPosData.length; i++) {
+      const dist = this.haversineDistance(
+        relevantPosData[i - 1].lat!,
+        relevantPosData[i - 1].lon!,
+        relevantPosData[i].lat!,
+        relevantPosData[i].lon!
+      );
+      cumulativeDistances.push(cumulativeDistances[i - 1] + dist);
+    }
+
+    // Total path distance
+    const pathDistance = cumulativeDistances[cumulativeDistances.length - 1];
+
+    // Generate points at equal distance intervals
+    let lastPoint = {
+      lat: startPos.lat,
+      lon: startPos.lon,
+      height: startPos.height,
+      seconds: startPos.seconds,
+    };
+
+    for (let i = 1; i <= numPoints; i++) {
+      // Target distance from start
+      const targetDistance = (i * totalDistance) / (numPoints + 1);
+
+      // Find the position in the path closest to the target distance
+      let idx = 0;
+      while (
+        idx < cumulativeDistances.length - 1 &&
+        cumulativeDistances[idx] < targetDistance
+      ) {
+        idx++;
+      }
+
+      let interpolatedPoint;
+
+      if (idx === 0) {
+        // If target is before the first point, use the first point
+        interpolatedPoint = {
+          lat: relevantPosData[0].lat!,
+          lon: relevantPosData[0].lon!,
+          height: relevantPosData[0].height,
+          seconds: relevantPosData[0].seconds,
+        };
+      } else {
+        // Interpolate between the two closest points
+        const prevIdx = idx - 1;
+        const prevDist = cumulativeDistances[prevIdx];
+        const nextDist = cumulativeDistances[idx];
+
+        const ratio = (targetDistance - prevDist) / (nextDist - prevDist);
+
+        const prevPoint = relevantPosData[prevIdx];
+        const nextPoint = relevantPosData[idx];
+
+        interpolatedPoint = {
+          lat: prevPoint.lat! + ratio * (nextPoint.lat! - prevPoint.lat!),
+          lon: prevPoint.lon! + ratio * (nextPoint.lon! - prevPoint.lon!),
+          height:
+            prevPoint.height + ratio * (nextPoint.height - prevPoint.height),
+          seconds:
+            prevPoint.seconds + ratio * (nextPoint.seconds - prevPoint.seconds),
+        };
+      }
+
+      // Calculate distance from previous point
+      const distFromPrev = this.haversineDistance(
+        lastPoint.lat,
+        lastPoint.lon,
+        interpolatedPoint.lat,
+        interpolatedPoint.lon
+      );
+
+      result.push({
+        ...interpolatedPoint,
+        distance_from_prev: distFromPrev,
+      });
+
+      lastPoint = interpolatedPoint;
+    }
+
+    return result;
   }
 
   /**
@@ -741,6 +873,14 @@ export class TriggerFixer {
       ...interpolatedData,
     ].sort((a, b) => a.seconds - b.seconds);
 
+    // Calculate time range
+    const startTime = combined.length > 0 ? combined[0].seconds : 0;
+    const endTime =
+      combined.length > 0 ? combined[combined.length - 1].seconds : 0;
+    const startWeek = combined.length > 0 ? combined[0].week : 0;
+    const endWeek =
+      combined.length > 0 ? combined[combined.length - 1].week : 0;
+
     // Format each line
     const lines = combined.map((event) => {
       // For interpolated events, convert decimal lat/lon back to DMS
@@ -763,24 +903,65 @@ export class TriggerFixer {
         lon_s = lonDms.s;
       }
 
-      let line = `${event.week} ${event.seconds.toFixed(3)} `;
-      line += `${lat_d} ${lat_m} ${lat_s.toFixed(9)} `;
-      line += `${lon_d} ${lon_m} ${lon_s.toFixed(9)} `;
-      line += `${event.height.toFixed(4)}`;
+      // Format with proper spacing for Emlid Studio compatibility
+      let line = `${event.week} ${event.seconds.toFixed(3)}`;
+      line += `   ${lat_d} ${lat_m} ${lat_s.toFixed(9)}`;
+      line += `   ${lon_d} ${lon_m} ${lon_s.toFixed(9)}`;
+      line += `   ${event.height.toFixed(4)}`;
+
+      // Add Q and ns if available
+      if ("Q" in event) {
+        line += `   ${event.Q}`;
+      }
+
+      if ("ns" in event) {
+        line += `   ${event.ns}`;
+      }
+
+      // Add additional fields if they exist
+      const additionalFields = [
+        "sdn",
+        "sde",
+        "sdu",
+        "sdne",
+        "sdeu",
+        "sdun",
+        "age",
+        "ratio",
+      ];
+      for (const field of additionalFields) {
+        if (field in event) {
+          line += `   ${(event[field] as number).toFixed(4)}`;
+        }
+      }
 
       // Add a comment to mark interpolated points
       if (event.interpolated) {
-        line += " # interpolated";
+        line += "  # interpolated";
       }
 
       return line;
     });
 
-    // Add header
+    // Get current date and time
+    const now = new Date();
+    const dateStr = now.toISOString().split("T")[0];
+    const timeStr = now.toISOString().split("T")[1].split(".")[0];
+
+    // Add comprehensive header that matches Emlid Studio format
     const header = [
-      "% Modified by Trigger Fix Tool",
-      "% Interpolated triggers have been added",
-      "% Original file: events.pos",
+      "% program   : Trigger Fix Tool v1.0",
+      "% processed : " + dateStr + " " + timeStr + " UTC",
+      "% original  : events.pos",
+      "% developer : Aerosys Aviation",
+      "% summary   : Added " +
+        interpolatedData.length +
+        " interpolated triggers",
+      "% obs start : week" + startWeek + " " + startTime.toFixed(1) + "s",
+      "% obs end   : week" + endWeek + " " + endTime.toFixed(1) + "s",
+      "%",
+      "% (lat/lon/height=WGS84/ellipsoidal,Q=1:fix,2:float,3:sbas,4:dgps,5:single,6:ppp,ns=# of satellites)",
+      "%  GPST            latitude(d'\")   longitude(d'\")  height(m)   Q  ns   sdn(m)   sde(m)   sdu(m)  sdne(m)  sdeu(m)  sdun(m) age(s)  ratio",
     ];
 
     return [...header, ...lines].join("\n");

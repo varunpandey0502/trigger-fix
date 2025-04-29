@@ -6,8 +6,8 @@ import argparse
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
-from .core import TriggerFixer
-from .config import DEFAULT_CONFIG
+from core import TriggerFixer
+from config import DEFAULT_CONFIG
 
 
 def main():
@@ -16,27 +16,42 @@ def main():
         description="Trigger Fix Tool - Find and interpolate missing triggers in GPS data"
     )
 
-    parser.add_argument("pos_file", help="Path to the position file (.pos)")
-    parser.add_argument("events_file", help="Path to the events file (_events.pos)")
+    # Define default paths to flight-1 data
+    default_pos_file = "data/flight-1/Reach_raw_20250403105951.pos"
+    default_events_file = "data/flight-1/Reach_raw_20250403105951_events.pos"
+
+    parser.add_argument(
+        "--pos_file", help="Path to the position file (.pos)", default=default_pos_file
+    )
+    parser.add_argument(
+        "--events_file",
+        help="Path to the events file (_events.pos)",
+        default=default_events_file,
+    )
     parser.add_argument(
         "--output-plot",
-        help="Path to save the output plot (default: flight_path_with_interpolated.png)",
+        help="Path to save the output plot (default: flight_path_with_interpolated.png in the same directory as input files)",
     )
     parser.add_argument(
         "--output-csv",
-        help="Path to save interpolated triggers as CSV (default: interpolated_triggers.csv)",
+        help="Path to save interpolated triggers as CSV (default: interpolated_triggers.csv in the same directory as input files)",
     )
     parser.add_argument(
         "--output-events",
-        help="Path to save combined events file (default: combined_events.pos)",
+        help="Path to save combined events file (default: combined_events.pos in the same directory as input files)",
     )
 
     args = parser.parse_args()
 
-    # Set default output paths if not specified
-    output_plot = args.output_plot or "flight_path_with_interpolated.png"
-    output_csv = args.output_csv or "interpolated_triggers.csv"
-    output_events = args.output_events or "combined_events.pos"
+    # Get the directory of the input files to save outputs in the same location
+    input_dir = os.path.dirname(args.pos_file)
+
+    # Set default output paths if not specified - now in the same directory as input files
+    output_plot = args.output_plot or os.path.join(
+        input_dir, "flight_path_with_interpolated.png"
+    )
+    output_csv = args.output_csv or os.path.join(input_dir, "interpolated_triggers.csv")
+    output_events = args.output_events or os.path.join(input_dir, "combined_events.pos")
 
     # Create TriggerFixer instance with default config
     fixer = TriggerFixer(DEFAULT_CONFIG)
