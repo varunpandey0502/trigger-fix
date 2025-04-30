@@ -867,22 +867,60 @@ export class TriggerFixer {
     eventsData: EventPoint[],
     interpolatedData: EventPoint[]
   ): string {
+    console.log(`Original events: ${eventsData.length}`);
+    console.log(`Interpolated events: ${interpolatedData.length}`);
+    console.log(
+      `Total expected: ${eventsData.length + interpolatedData.length}`
+    );
+
     // Combine original and interpolated events
     const combined = [
       ...eventsData.map((e) => ({ ...e, interpolated: false })),
       ...interpolatedData,
     ].sort((a, b) => a.seconds - b.seconds);
 
+    console.log(`Combined events after sorting: ${combined.length}`);
+
+    // Ensure no duplicate timestamps by adding tiny offsets if needed
+    const uniqueCombined = combined.map((point, index) => {
+      if (
+        index > 0 &&
+        Math.abs(point.seconds - combined[index - 1].seconds) < 0.001
+      ) {
+        // Add a tiny offset (0.001 seconds) to ensure uniqueness
+        return { ...point, seconds: point.seconds + 0.001 };
+      }
+      return point;
+    });
+
+    console.log(
+      `Combined events after ensuring unique timestamps: ${uniqueCombined.length}`
+    );
+
     // Calculate time range
-    const startTime = combined.length > 0 ? combined[0].seconds : 0;
+    const startTime = uniqueCombined.length > 0 ? uniqueCombined[0].seconds : 0;
     const endTime =
-      combined.length > 0 ? combined[combined.length - 1].seconds : 0;
-    const startWeek = combined.length > 0 ? combined[0].week : 0;
+      uniqueCombined.length > 0
+        ? uniqueCombined[uniqueCombined.length - 1].seconds
+        : 0;
+    const startWeek = uniqueCombined.length > 0 ? uniqueCombined[0].week : 0;
     const endWeek =
-      combined.length > 0 ? combined[combined.length - 1].week : 0;
+      uniqueCombined.length > 0
+        ? uniqueCombined[uniqueCombined.length - 1].week
+        : 0;
+
+    // Count original and interpolated points in the final output
+    const originalCount = uniqueCombined.filter((p) => !p.interpolated).length;
+    const interpolatedCount = uniqueCombined.filter(
+      (p) => p.interpolated
+    ).length;
+
+    console.log(`Final original count: ${originalCount}`);
+    console.log(`Final interpolated count: ${interpolatedCount}`);
+    console.log(`Final total count: ${uniqueCombined.length}`);
 
     // Format each line
-    const lines = combined.map((event) => {
+    const lines = uniqueCombined.map((event, idx) => {
       // For interpolated events, convert decimal lat/lon back to DMS
       let lat_d = event.lat_d;
       let lat_m = event.lat_m;
@@ -940,23 +978,35 @@ export class TriggerFixer {
         line += "  # interpolated";
       }
 
+      // Log every 10th point for debugging
+      if (idx % 10 === 0) {
+        console.log(`Formatting point ${idx + 1}/${uniqueCombined.length}`);
+      }
+
       return line;
     });
 
-    // Get current date and time
-    const now = new Date();
-    const dateStr = now.toISOString().split("T")[0];
-    const timeStr = now.toISOString().split("T")[1].split(".")[0];
+    console.log(`Formatted lines: ${lines.length}`);
 
-    // Add comprehensive header that matches Emlid Studio format
+    // Add header with statistics
     const header = [
       "% program   : Trigger Fix Tool v1.0",
-      "% processed : " + dateStr + " " + timeStr + " UTC",
+      "% processed : " +
+        new Date().toISOString().split("T")[0] +
+        " " +
+        new Date().toISOString().split("T")[1].split(".")[0] +
+        " UTC",
       "% original  : events.pos",
       "% developer : Aerosys Aviation",
       "% summary   : Added " +
         interpolatedData.length +
         " interpolated triggers",
+      "% stats     : Original: " +
+        originalCount +
+        ", Interpolated: " +
+        interpolatedCount +
+        ", Total: " +
+        uniqueCombined.length,
       "% obs start : week" + startWeek + " " + startTime.toFixed(1) + "s",
       "% obs end   : week" + endWeek + " " + endTime.toFixed(1) + "s",
       "%",
@@ -964,7 +1014,8 @@ export class TriggerFixer {
       "%  GPST            latitude(d'\")   longitude(d'\")  height(m)   Q  ns   sdn(m)   sde(m)   sdu(m)  sdne(m)  sdeu(m)  sdun(m) age(s)  ratio",
     ];
 
-    return [...header, ...lines].join("\n");
+    // Ensure the last line has a newline
+    return [...header, ...lines].join("\n") + "\n";
   }
 
   /**
