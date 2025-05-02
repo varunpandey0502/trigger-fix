@@ -552,10 +552,14 @@ export class TriggerFixer {
     // Initialize list to store interpolated triggers
     const interpolatedTriggers: EventPoint[] = [];
 
+    // Define the window size and step size
+    const windowSize = Math.min(this.config.windowSize, distances.length);
+    const stepSize = Math.min(3, Math.floor(windowSize / 3)); // Slide by 2 or 3 triggers at a time
+
     // Process each window
-    for (let i = 0; i < distances.length - this.config.windowSize + 1; i++) {
+    for (let i = 0; i <= distances.length - windowSize; i += stepSize) {
       // Get current window of distances
-      const distWindow = distances.slice(i, i + this.config.windowSize);
+      const distWindow = distances.slice(i, i + windowSize);
 
       // Calculate median distance in this window
       const medianDistance = this.median(distWindow);
@@ -564,9 +568,10 @@ export class TriggerFixer {
       const maxDistance = medianDistance * this.config.maxIntervalFactor;
       const minDistance = medianDistance * this.config.minIntervalFactor;
 
-      // Check if the distance after the window is too large (indicating missing triggers)
-      if (i + this.config.windowSize < distances.length) {
-        const currentDistance = distances[i + this.config.windowSize];
+      // Check all distances in and immediately after the window
+      const endIdx = Math.min(i + windowSize + 1, distances.length);
+      for (let j = i; j < endIdx; j++) {
+        const currentDistance = distances[j];
 
         if (currentDistance > maxDistance) {
           // Calculate how many triggers are missing
@@ -574,7 +579,7 @@ export class TriggerFixer {
 
           if (numMissing > 0) {
             // Get start and end points for interpolation
-            const startIdx = i + this.config.windowSize;
+            const startIdx = j;
             const startTime = sortedEvents[startIdx].seconds;
             const endTime = sortedEvents[startIdx + 1].seconds;
 
