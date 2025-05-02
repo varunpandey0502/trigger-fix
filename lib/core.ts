@@ -552,6 +552,9 @@ export class TriggerFixer {
     // Initialize list to store interpolated triggers
     const interpolatedTriggers: EventPoint[] = [];
 
+    // Track which gaps have already been processed
+    const processedGaps = new Set<number>();
+
     // Define the window size and step size
     const windowSize = Math.min(this.config.windowSize, distances.length);
     const stepSize = Math.min(3, Math.floor(windowSize / 3)); // Slide by 2 or 3 triggers at a time
@@ -571,6 +574,9 @@ export class TriggerFixer {
       // Check all distances in and immediately after the window
       const endIdx = Math.min(i + windowSize + 1, distances.length);
       for (let j = i; j < endIdx; j++) {
+        // Skip if this gap has already been processed
+        if (processedGaps.has(j)) continue;
+
         const currentDistance = distances[j];
 
         if (currentDistance > maxDistance) {
@@ -578,6 +584,9 @@ export class TriggerFixer {
           const numMissing = Math.round(currentDistance / medianDistance) - 1;
 
           if (numMissing > 0) {
+            // Mark this gap as processed
+            processedGaps.add(j);
+
             // Get start and end points for interpolation
             const startIdx = j;
             const startTime = sortedEvents[startIdx].seconds;
