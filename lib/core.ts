@@ -987,11 +987,6 @@ export class TriggerFixer {
         }
       }
 
-      // Add a comment to mark interpolated points
-      if (event.interpolated) {
-        line += "  # interpolated";
-      }
-
       // Log every 10th point for debugging
       if (idx % 10 === 0) {
         console.log(`Formatting point ${idx + 1}/${uniqueCombined.length}`);
