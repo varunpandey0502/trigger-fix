@@ -28,6 +28,15 @@ import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 
+// Define the EventPoint interface
+interface EventPoint {
+  lat: number;
+  lon: number;
+  seconds: number;
+  distance_from_prev?: number;
+  index?: number;
+}
+
 export default function Home() {
   const [posFile, setPosFile] = useState<File | null>(null);
   const [eventsFile, setEventsFile] = useState<File | null>(null);
@@ -40,7 +49,7 @@ export default function Home() {
   // Initialize the TriggerFixer with default config
   const triggerFixer = new TriggerFixer({
     ...DEFAULT_CONFIG,
-    thresholdMultiplier: triggerDistance,
+    threshold: triggerDistance,
   });
 
   const handlePosFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -81,7 +90,7 @@ export default function Home() {
       const results = await triggerFixer.processFiles(
         posFileContent,
         eventsFileContent,
-        triggerDistance
+        triggerDistance ?? undefined
       );
 
       // Set the minimum distance if it's not already set
@@ -229,9 +238,14 @@ export default function Home() {
   const handleTriggerDistanceChange = (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
-    const value = parseFloat(e.target.value);
-    if (!isNaN(value) && value > 0) {
-      setTriggerDistance(value);
+    const value = e.target.value;
+    if (value === "") {
+      setTriggerDistance(null);
+    } else {
+      const numValue = parseFloat(value);
+      if (!isNaN(numValue) && numValue > 0) {
+        setTriggerDistance(numValue);
+      }
     }
   };
 
