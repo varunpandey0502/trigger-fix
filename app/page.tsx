@@ -10,6 +10,9 @@ import { useState } from "react";
 import {
   CartesianGrid,
   Legend,
+  Line,
+  LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -17,8 +20,13 @@ import {
   XAxis,
   YAxis,
   ZAxis,
+  ComposedChart,
+  Bar,
 } from "recharts";
 import { DEFAULT_CONFIG, ProcessingResults, TriggerFixer } from "../lib/core";
+import { Slider } from "@/components/ui/slider";
+import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 
 export default function Home() {
   const [posFile, setPosFile] = useState<File | null>(null);
@@ -26,19 +34,30 @@ export default function Home() {
   const [status, setStatus] = useState<string>("Ready");
   const [processing, setProcessing] = useState<boolean>(false);
   const [results, setResults] = useState<ProcessingResults | null>(null);
+  const [triggerDistance, setTriggerDistance] = useState<number | null>(null);
+  const [minDistance, setMinDistance] = useState<number | null>(null);
 
   // Initialize the TriggerFixer with default config
-  const triggerFixer = new TriggerFixer();
+  const triggerFixer = new TriggerFixer({
+    ...DEFAULT_CONFIG,
+    thresholdMultiplier: triggerDistance,
+  });
 
   const handlePosFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setPosFile(e.target.files[0]);
+      // Reset trigger distance when a new file is selected
+      setTriggerDistance(null);
+      setMinDistance(null);
     }
   };
 
   const handleEventsFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setEventsFile(e.target.files[0]);
+      // Reset trigger distance when a new file is selected
+      setTriggerDistance(null);
+      setMinDistance(null);
     }
   };
 
@@ -61,8 +80,15 @@ export default function Home() {
       // Process the files using our TriggerFixer
       const results = await triggerFixer.processFiles(
         posFileContent,
-        eventsFileContent
+        eventsFileContent,
+        triggerDistance
       );
+
+      // Set the minimum distance if it's not already set
+      if (results.stats.minDistance && !triggerDistance) {
+        setMinDistance(results.stats.minDistance);
+        setTriggerDistance(results.stats.minDistance);
+      }
 
       setResults(results);
       setStatus(
@@ -147,6 +173,201 @@ export default function Home() {
     }));
   };
 
+  // Add this new component to visualize trigger distances
+  const DistancePlot = ({ eventsData }: { eventsData: EventPoint[] }) => {
+    // Sort events by time
+    const sortedEvents = [...eventsData].sort((a, b) => a.seconds - b.seconds);
+
+    // Calculate distances between consecutive triggers
+    const distanceData = [];
+    for (let i = 1; i < sortedEvents.length; i++) {
+      const prev = sortedEvents[i - 1];
+      const curr = sortedEvents[i];
+
+      distanceData.push({
+        index: i,
+        seconds: curr.seconds,
+        distance: curr.distance_from_prev || 0,
+      });
+    }
+
+    return (
+      <div className="h-[300px] border rounded-md p-4">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart
+            data={distanceData}
+            margin={{ top: 20, right: 20, bottom: 20, left: 20 }}
+          >
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis
+              dataKey="index"
+              label={{ value: "Trigger Index", position: "bottom" }}
+            />
+            <YAxis
+              label={{ value: "Distance (m)", angle: -90, position: "left" }}
+              domain={["dataMin", "dataMax"]}
+            />
+            <Tooltip
+              formatter={(value: any) => [`${value.toFixed(2)} m`, "Distance"]}
+            />
+            <Line
+              type="monotone"
+              dataKey="distance"
+              stroke="#ff7300"
+              dot={{ r: 2 }}
+              isAnimationActive={false}
+            />
+            {/* Add a reference line at 20m (our current threshold) */}
+            <ReferenceLine y={20} stroke="red" strokeDasharray="3 3" />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  };
+
+  // Add this handler for the input change
+  const handleTriggerDistanceChange = (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const value = parseFloat(e.target.value);
+    if (!isNaN(value) && value > 0) {
+      setTriggerDistance(value);
+    }
+  };
+
+  // Add this handler to reset to minimum
+  const resetToMinimum = () => {
+    if (minDistance) {
+      setTriggerDistance(minDistance);
+    }
+  };
+
+  // Add this new component to visualize the distance distribution
+  const DistanceDistribution = ({
+    eventsData,
+  }: {
+    eventsData: EventPoint[];
+  }) => {
+    // Extract distances between consecutive triggers
+    const rawDistances = eventsData
+      .filter((event) => event.distance_from_prev !== undefined)
+      .map((event) => event.distance_from_prev!);
+
+    if (rawDistances.length === 0) return <div>No distance data available</div>;
+
+    // Round distances to whole numbers for better binning
+    const distances = rawDistances.map((d) => Math.round(d));
+
+    // Calculate statistics
+    const min = Math.min(...distances);
+    const max = Math.max(...distances);
+    const mean =
+      distances.reduce((sum, val) => sum + val, 0) / distances.length;
+
+    // Calculate standard deviation
+    const variance =
+      distances.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) /
+      distances.length;
+    const stdDev = Math.sqrt(variance);
+
+    // Create histogram with integer bins
+    // Instead of dividing into equal width bins, use integer bins
+    const binMap = new Map<number, number>();
+
+    // Count occurrences of each rounded distance
+    distances.forEach((distance) => {
+      binMap.set(distance, (binMap.get(distance) || 0) + 1);
+    });
+
+    // Convert map to array of bin data
+    const histogramData = Array.from(binMap.entries())
+      .map(([distance, count]) => ({ distance, count }))
+      .sort((a, b) => a.distance - b.distance);
+
+    // Create normal distribution curve data
+    const curvePoints = 50;
+    const curveData = Array(curvePoints)
+      .fill(0)
+      .map((_, index) => {
+        const x = min + (max - min) * (index / (curvePoints - 1));
+        // Normal distribution formula
+        const y =
+          (1 / (stdDev * Math.sqrt(2 * Math.PI))) *
+          Math.exp(-0.5 * Math.pow((x - mean) / stdDev, 2)) *
+          distances.length; // Scale to match histogram
+        return { distance: x, normalValue: y };
+      });
+
+    return (
+      <div className="h-[300px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart
+            data={histogramData}
+            margin={{ top: 20, right: 20, bottom: 20, left: 20 }}
+          >
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis
+              dataKey="distance"
+              label={{ value: "Distance (m)", position: "bottom" }}
+              domain={[min - 1, max + 1]}
+              tickCount={Math.min(20, max - min + 1)}
+              type="number"
+            />
+            <YAxis
+              label={{ value: "Frequency", angle: -90, position: "insideLeft" }}
+            />
+            <Tooltip formatter={(value: any) => [value, ""]} />
+            <Legend />
+            <Bar dataKey="count" fill="#8884d8" name="Frequency" />
+            <Line
+              data={curveData}
+              type="monotone"
+              dataKey="normalValue"
+              stroke="#ff7300"
+              dot={false}
+              name="Normal Distribution"
+            />
+            <ReferenceLine
+              x={mean}
+              stroke="green"
+              strokeDasharray="3 3"
+              label={{ value: `Mean: ${mean.toFixed(1)}m`, position: "top" }}
+            />
+            <ReferenceLine
+              x={Math.round(mean + stdDev)}
+              stroke="blue"
+              strokeDasharray="3 3"
+              label={{
+                value: `+1σ: ${(mean + stdDev).toFixed(1)}m`,
+                position: "top",
+              }}
+            />
+            <ReferenceLine
+              x={Math.round(mean - stdDev)}
+              stroke="blue"
+              strokeDasharray="3 3"
+              label={{
+                value: `-1σ: ${(mean - stdDev).toFixed(1)}m`,
+                position: "top",
+              }}
+            />
+            {triggerDistance && (
+              <ReferenceLine
+                x={triggerDistance}
+                stroke="red"
+                strokeDasharray="3 3"
+                label={{
+                  value: `Threshold: ${triggerDistance.toFixed(1)}m`,
+                  position: "top",
+                }}
+              />
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  };
+
   return (
     <div className="container mx-auto p-4 max-w-7xl">
       <h1 className="text-3xl font-bold mb-6">Trigger Fix Tool</h1>
@@ -223,11 +444,49 @@ export default function Home() {
             </div>
 
             <div className="mt-4">
-              <Alert variant="outline">
+              <Alert variant="default">
                 <AlertCircle className="h-4 w-4" />
                 <AlertTitle>Status</AlertTitle>
                 <AlertDescription>{status}</AlertDescription>
               </Alert>
+            </div>
+
+            <div className="space-y-2 mt-4">
+              <div className="flex justify-between items-center">
+                <Label htmlFor="trigger-distance">
+                  Estimated Trigger Distance (meters)
+                </Label>
+                {minDistance && (
+                  <div className="text-xs text-muted-foreground">
+                    Minimum: {minDistance.toFixed(2)}m
+                  </div>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  id="trigger-distance"
+                  type="number"
+                  min="0.1"
+                  step="0.1"
+                  value={triggerDistance || ""}
+                  onChange={handleTriggerDistanceChange}
+                  placeholder="Enter trigger distance"
+                  className="w-full"
+                />
+                {minDistance && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={resetToMinimum}
+                    title="Reset to minimum distance"
+                  >
+                    Reset
+                  </Button>
+                )}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Distances greater than this value will trigger interpolation
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -244,6 +503,7 @@ export default function Home() {
               <Tabs defaultValue="map">
                 <TabsList className="mb-4">
                   <TabsTrigger value="map">Map View</TabsTrigger>
+                  <TabsTrigger value="distances">Trigger Distances</TabsTrigger>
                   <TabsTrigger value="stats">Statistics</TabsTrigger>
                 </TabsList>
 
@@ -274,16 +534,56 @@ export default function Home() {
                         <Tooltip
                           cursor={{ strokeDasharray: "3 3" }}
                           formatter={(value: any) => [value.toFixed(6), ""]}
+                          content={({ active, payload }) => {
+                            if (active && payload && payload.length) {
+                              const data = payload[0].payload;
+                              return (
+                                <div className="bg-white p-2 border rounded shadow-sm">
+                                  <p className="font-bold">{`Trigger ${
+                                    data.index || "N/A"
+                                  }`}</p>
+                                  <p>{`Latitude: ${data.lat.toFixed(6)}°`}</p>
+                                  <p>{`Longitude: ${data.lon.toFixed(6)}°`}</p>
+                                  {data.distance_from_prev !== undefined && (
+                                    <p>{`Distance: ${data.distance_from_prev.toFixed(
+                                      2
+                                    )}m`}</p>
+                                  )}
+                                </div>
+                              );
+                            }
+                            return null;
+                          }}
                         />
                         <Legend />
 
-                        {/* Original triggers */}
+                        {/* Original triggers with index */}
                         <Scatter
                           name="Original Triggers"
-                          data={prepareDataForChart(results.eventsData)}
+                          data={prepareDataForChart(results.eventsData).map(
+                            (point, idx) => ({
+                              ...point,
+                              index: idx + 1,
+                            })
+                          )}
                           fill={DEFAULT_CONFIG.triggerColor}
                           shape="star"
                           isAnimationActive={false}
+                          label={(props) => {
+                            const { x, y, index } = props;
+                            return (
+                              <text
+                                x={x}
+                                y={y}
+                                dy={-10}
+                                fontSize={10}
+                                textAnchor="middle"
+                                fill="#666"
+                              >
+                                {index}
+                              </text>
+                            );
+                          }}
                         />
 
                         {/* Interpolated triggers */}
@@ -315,6 +615,29 @@ export default function Home() {
                       Export Combined Events File
                     </Button>
                   </div>
+                </TabsContent>
+
+                <TabsContent value="distances" className="space-y-4">
+                  <DistancePlot eventsData={results.eventsData} />
+                  <div className="text-sm text-muted-foreground mt-2 mb-4">
+                    This chart shows the distance between consecutive triggers.
+                    The red line indicates the threshold distance used for
+                    detecting missing triggers.
+                  </div>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Distance Distribution</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <DistanceDistribution eventsData={results.eventsData} />
+                      <div className="text-sm text-muted-foreground mt-2">
+                        This histogram shows the distribution of distances
+                        between consecutive triggers. The curve represents the
+                        normal distribution based on the data.
+                      </div>
+                    </CardContent>
+                  </Card>
                 </TabsContent>
 
                 <TabsContent value="stats">
