@@ -1133,7 +1133,7 @@ export class TriggerFixer {
 
     console.log(`Formatted lines: ${lines.length}`);
 
-    // Add header with statistics
+    // Add header with statistics and trigger distance information
     const header = [
       "% program   : Trigger Fix Tool v1.0",
       "% processed : " +
@@ -1152,6 +1152,10 @@ export class TriggerFixer {
         interpolatedCount +
         ", Total: " +
         uniqueCombined.length,
+      "% threshold : " +
+        (this.config.triggerDistance
+          ? this.config.triggerDistance.toFixed(2) + "m"
+          : "auto"),
       "% obs start : week" + startWeek + " " + startTime.toFixed(1) + "s",
       "% obs end   : week" + endWeek + " " + endTime.toFixed(1) + "s",
       "%",
