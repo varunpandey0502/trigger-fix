@@ -615,6 +615,10 @@ export class TriggerFixer {
     // Use the provided trigger distance or default to median
     const triggerDistance = this.config.triggerDistance || medianDistance;
 
+    // Set a minimum interpolation distance that's at least the global minimum
+    // This ensures interpolated points aren't placed too close together
+    const minInterpolationDistance = minDistance;
+
     // Second pass: interpolate missing triggers based on the threshold
     for (let i = 0; i < sortedEvents.length - 1; i++) {
       const currentTrigger = sortedEvents[i];
@@ -647,8 +651,48 @@ export class TriggerFixer {
           posData
         );
 
-        // Add interpolated triggers
+        // Filter interpolated positions to ensure minimum distance between points
+        const filteredPositions = [];
+        let lastPoint = {
+          lat: currentTrigger.lat!,
+          lon: currentTrigger.lon!,
+        };
+
         for (const pos of interpolatedPositions) {
+          // Calculate distance from last point (either original or interpolated)
+          const distFromLast = this.haversineDistance(
+            lastPoint.lat,
+            lastPoint.lon,
+            pos.lat,
+            pos.lon
+          );
+
+          // Only add this point if it's far enough from the last point
+          if (distFromLast >= minInterpolationDistance) {
+            filteredPositions.push(pos);
+            lastPoint = { lat: pos.lat, lon: pos.lon };
+          }
+        }
+
+        // Check distance to next original trigger
+        if (filteredPositions.length > 0) {
+          const lastInterpolated =
+            filteredPositions[filteredPositions.length - 1];
+          const distToNext = this.haversineDistance(
+            lastInterpolated.lat,
+            lastInterpolated.lon,
+            nextTrigger.lat!,
+            nextTrigger.lon!
+          );
+
+          // Remove last interpolated point if it's too close to the next original trigger
+          if (distToNext < minInterpolationDistance) {
+            filteredPositions.pop();
+          }
+        }
+
+        // Add filtered interpolated triggers
+        for (const pos of filteredPositions) {
           // Get the GPS week from nearby points
           const week = currentTrigger.week;
 
