@@ -542,7 +542,7 @@ export class TriggerFixer {
     // Initialize list to store interpolated triggers
     const interpolatedTriggers: EventPoint[] = [];
 
-    // First pass: calculate distances between all consecutive triggers
+    // First calculate distances between consecutive triggers
     for (let i = 0; i < sortedEvents.length - 1; i++) {
       const currentTrigger = sortedEvents[i];
       const nextTrigger = sortedEvents[i + 1];
@@ -556,7 +556,7 @@ export class TriggerFixer {
         )
         .sort((a, b) => a.seconds - b.seconds);
 
-      // Calculate the actual flight path distance by summing distances between consecutive points
+      // Calculate the actual flight path distance
       let actualPathDistance = 0;
 
       if (relevantPosData.length > 1) {
@@ -569,7 +569,6 @@ export class TriggerFixer {
           );
         }
       } else {
-        // If we don't have enough position data, use direct distance
         actualPathDistance = this.haversineDistance(
           currentTrigger.lat!,
           currentTrigger.lon!,
@@ -578,143 +577,81 @@ export class TriggerFixer {
         );
       }
 
-      // Store the distance for reference
       nextTrigger.distance_from_prev = actualPathDistance;
     }
 
-    // Calculate baseline statistics from all trigger distances
-    const allDistances = sortedEvents
-      .slice(1) // Skip the first trigger as it has no previous
+    // Calculate minimum distance from first 10 triggers
+    const firstTenDistances = sortedEvents
+      .slice(1, 11)
       .map((e) => e.distance_from_prev!)
       .filter((d) => d !== undefined);
 
-    // Calculate median distance as baseline
-    const sortedDistances = [...allDistances].sort((a, b) => a - b);
-    const medianDistance =
-      sortedDistances.length % 2 === 0
-        ? (sortedDistances[sortedDistances.length / 2 - 1] +
-            sortedDistances[sortedDistances.length / 2]) /
-          2
-        : sortedDistances[Math.floor(sortedDistances.length / 2)];
+    if (firstTenDistances.length === 0) return [];
 
-    // Calculate min and average for reference
-    const minDistance = Math.min(...allDistances);
-    const avgDistance =
-      allDistances.reduce((sum, d) => sum + d, 0) / allDistances.length;
+    const minTriggerDistance = Math.min(...firstTenDistances);
 
-    console.log(
-      "Baseline distances - Min:",
-      minDistance.toFixed(2),
-      "m, Median:",
-      medianDistance.toFixed(2),
-      "m, Avg:",
-      avgDistance.toFixed(2),
-      "m"
-    );
-
-    // Use the provided trigger distance or default to median
-    const triggerDistance = this.config.triggerDistance || medianDistance;
-
-    // Set a minimum interpolation distance that's at least the global minimum
-    // This ensures interpolated points aren't placed too close together
-    const minInterpolationDistance = minDistance;
-
-    // Second pass: interpolate missing triggers based on the threshold
-    for (let i = 0; i < sortedEvents.length - 1; i++) {
+    // Walk backwards through the triggers
+    for (let i = sortedEvents.length - 1; i > 0; i--) {
       const currentTrigger = sortedEvents[i];
-      const nextTrigger = sortedEvents[i + 1];
-      const actualPathDistance = nextTrigger.distance_from_prev!;
+      const prevTrigger = sortedEvents[i - 1];
+      const distance = currentTrigger.distance_from_prev!;
 
-      // If the distance is larger than the trigger distance, interpolate
-      if (actualPathDistance > triggerDistance) {
-        // Estimate how many triggers should be in this gap
-        const numMissing = Math.max(
-          0,
-          Math.floor(actualPathDistance / triggerDistance) - 1
-        );
+      // If distance is more than 1.5x the minimum trigger distance
+      if (distance > minTriggerDistance * 1.5) {
+        // Calculate how many triggers should be in this gap
+        const numMissing = Math.floor(distance / minTriggerDistance) - 1;
 
-        // Interpolate positions along the actual flight path
-        const interpolatedPositions = this.interpolatePositionsByDistance(
-          {
+        if (numMissing > 0) {
+          // Get all position points between these triggers
+          const relevantPosData = posData
+            .filter(
+              (p) =>
+                p.seconds >= prevTrigger.seconds &&
+                p.seconds <= currentTrigger.seconds
+            )
+            .sort((a, b) => b.seconds - a.seconds); // Sort in reverse order
+
+          // Start from the current trigger and work backwards
+          let lastPoint = {
             lat: currentTrigger.lat!,
             lon: currentTrigger.lon!,
             height: currentTrigger.height,
             seconds: currentTrigger.seconds,
-          },
-          {
-            lat: nextTrigger.lat!,
-            lon: nextTrigger.lon!,
-            height: nextTrigger.height,
-            seconds: nextTrigger.seconds,
-          },
-          numMissing,
-          posData
-        );
+          };
 
-        // Filter interpolated positions to ensure minimum distance between points
-        const filteredPositions = [];
-        let lastPoint = {
-          lat: currentTrigger.lat!,
-          lon: currentTrigger.lon!,
-        };
+          for (let j = 0; j < numMissing; j++) {
+            // Find position that's minTriggerDistance away from the last point
+            const interpolatedPoint = this.findPointAtDistance(
+              relevantPosData,
+              lastPoint,
+              minTriggerDistance,
+              prevTrigger
+            );
 
-        for (const pos of interpolatedPositions) {
-          // Calculate distance from last point (either original or interpolated)
-          const distFromLast = this.haversineDistance(
-            lastPoint.lat,
-            lastPoint.lon,
-            pos.lat,
-            pos.lon
-          );
+            if (interpolatedPoint) {
+              // Convert decimal lat/lon to DMS
+              const latDms = this.decimalToDms(interpolatedPoint.lat);
+              const lonDms = this.decimalToDms(interpolatedPoint.lon);
 
-          // Only add this point if it's far enough from the last point
-          if (distFromLast >= minInterpolationDistance) {
-            filteredPositions.push(pos);
-            lastPoint = { lat: pos.lat, lon: pos.lon };
+              interpolatedTriggers.push({
+                week: prevTrigger.week, // Use the week from previous trigger
+                seconds: interpolatedPoint.seconds,
+                lat_d: latDms.d,
+                lat_m: latDms.m,
+                lat_s: latDms.s,
+                lon_d: lonDms.d,
+                lon_m: lonDms.m,
+                lon_s: lonDms.s,
+                height: interpolatedPoint.height,
+                lat: interpolatedPoint.lat,
+                lon: interpolatedPoint.lon,
+                interpolated: true,
+                distance_from_prev: minTriggerDistance,
+              });
+
+              lastPoint = interpolatedPoint;
+            }
           }
-        }
-
-        // Check distance to next original trigger
-        if (filteredPositions.length > 0) {
-          const lastInterpolated =
-            filteredPositions[filteredPositions.length - 1];
-          const distToNext = this.haversineDistance(
-            lastInterpolated.lat,
-            lastInterpolated.lon,
-            nextTrigger.lat!,
-            nextTrigger.lon!
-          );
-
-          // Remove last interpolated point if it's too close to the next original trigger
-          if (distToNext < minInterpolationDistance) {
-            filteredPositions.pop();
-          }
-        }
-
-        // Add filtered interpolated triggers
-        for (const pos of filteredPositions) {
-          // Get the GPS week from nearby points
-          const week = currentTrigger.week;
-
-          // Convert decimal lat/lon to DMS
-          const latDms = this.decimalToDms(pos.lat);
-          const lonDms = this.decimalToDms(pos.lon);
-
-          interpolatedTriggers.push({
-            week,
-            seconds: pos.seconds,
-            lat_d: latDms.d,
-            lat_m: latDms.m,
-            lat_s: latDms.s,
-            lon_d: lonDms.d,
-            lon_m: lonDms.m,
-            lon_s: lonDms.s,
-            height: pos.height,
-            lat: pos.lat,
-            lon: pos.lon,
-            interpolated: true,
-            distance_from_prev: pos.distance_from_prev,
-          });
         }
       }
     }
@@ -723,239 +660,65 @@ export class TriggerFixer {
   }
 
   /**
-   * Interpolate positions by distance between two points
+   * Find a point at specified distance from a reference point
    */
-  interpolatePositionsByDistance(
-    startPos: { lat: number; lon: number; height: number; seconds: number },
-    endPos: { lat: number; lon: number; height: number; seconds: number },
-    numPoints: number,
-    posData: PositionPoint[]
-  ): Array<{
-    lat: number;
-    lon: number;
-    height: number;
-    seconds: number;
-    distance_from_prev: number;
-  }> {
-    const result: Array<{
+  private findPointAtDistance(
+    posData: PositionPoint[],
+    referencePoint: {
       lat: number;
       lon: number;
       height: number;
       seconds: number;
-      distance_from_prev: number;
-    }> = [];
+    },
+    targetDistance: number,
+    prevTrigger: EventPoint
+  ): { lat: number; lon: number; height: number; seconds: number } | null {
+    // Walk through position data to find point at desired distance
+    let accumulatedDistance = 0;
 
-    // Find all position points between start and end times
-    const relevantPosData = posData
-      .filter(
-        (p) => p.seconds >= startPos.seconds && p.seconds <= endPos.seconds
-      )
-      .sort((a, b) => a.seconds - b.seconds);
+    for (let i = 0; i < posData.length - 1; i++) {
+      const currentPos = posData[i];
+      const nextPos = posData[i + 1];
 
-    if (relevantPosData.length < 2) {
-      // Not enough position data, fall back to linear interpolation
-      const totalDistance = this.haversineDistance(
-        startPos.lat,
-        startPos.lon,
-        endPos.lat,
-        endPos.lon
+      const segmentDistance = this.haversineDistance(
+        currentPos.lat!,
+        currentPos.lon!,
+        nextPos.lat!,
+        nextPos.lon!
       );
 
-      // Calculate segment distance
-      const segmentDistance = totalDistance / (numPoints + 1);
+      // If this segment contains our target distance point
+      if (accumulatedDistance + segmentDistance >= targetDistance) {
+        // Calculate how far along this segment our point should be
+        const remainingDistance = targetDistance - accumulatedDistance;
+        const ratio = remainingDistance / segmentDistance;
 
-      for (let i = 1; i <= numPoints; i++) {
-        const ratio = i / (numPoints + 1);
-        const lat = startPos.lat + ratio * (endPos.lat - startPos.lat);
-        const lon = startPos.lon + ratio * (endPos.lon - startPos.lon);
+        // Interpolate position
+        const lat = nextPos.lat! + ratio * (currentPos.lat! - nextPos.lat!);
+        const lon = nextPos.lon! + ratio * (currentPos.lon! - nextPos.lon!);
         const height =
-          startPos.height + ratio * (endPos.height - startPos.height);
+          nextPos.height + ratio * (currentPos.height - nextPos.height);
         const seconds =
-          startPos.seconds + ratio * (endPos.seconds - startPos.seconds);
+          nextPos.seconds + ratio * (currentPos.seconds - nextPos.seconds);
 
-        result.push({
+        // Check if this point is too close to the previous trigger
+        const distToPrev = this.haversineDistance(
           lat,
           lon,
-          height,
-          seconds,
-          distance_from_prev:
-            i === 1
-              ? segmentDistance
-              : this.haversineDistance(
-                  result[result.length - 1].lat,
-                  result[result.length - 1].lon,
-                  lat,
-                  lon
-                ),
-        });
-      }
-      return result;
-    }
-
-    // Create a path from the position data
-    const path: Array<{
-      lat: number;
-      lon: number;
-      height: number;
-      seconds: number;
-      distance: number;
-      cumulativeDistance: number;
-    }> = [];
-
-    // Add start point to the path
-    path.push({
-      lat: startPos.lat,
-      lon: startPos.lon,
-      height: startPos.height,
-      seconds: startPos.seconds,
-      distance: 0,
-      cumulativeDistance: 0,
-    });
-
-    // Add all relevant position points to the path
-    for (const point of relevantPosData) {
-      // Skip points that are too close to the previous point (within 0.1m)
-      if (path.length > 0) {
-        const prevPoint = path[path.length - 1];
-        const distance = this.haversineDistance(
-          prevPoint.lat,
-          prevPoint.lon,
-          point.lat!,
-          point.lon!
+          prevTrigger.lat!,
+          prevTrigger.lon!
         );
 
-        // Skip if too close to previous point
-        if (distance < 0.1) continue;
-
-        path.push({
-          lat: point.lat!,
-          lon: point.lon!,
-          height: point.height,
-          seconds: point.seconds,
-          distance,
-          cumulativeDistance: prevPoint.cumulativeDistance + distance,
-        });
-      } else {
-        path.push({
-          lat: point.lat!,
-          lon: point.lon!,
-          height: point.height,
-          seconds: point.seconds,
-          distance: 0,
-          cumulativeDistance: 0,
-        });
-      }
-    }
-
-    // Add end point to the path if it's not already there
-    const lastPathPoint = path[path.length - 1];
-    const distanceToEnd = this.haversineDistance(
-      lastPathPoint.lat,
-      lastPathPoint.lon,
-      endPos.lat,
-      endPos.lon
-    );
-
-    if (distanceToEnd > 0.1) {
-      path.push({
-        lat: endPos.lat,
-        lon: endPos.lon,
-        height: endPos.height,
-        seconds: endPos.seconds,
-        distance: distanceToEnd,
-        cumulativeDistance: lastPathPoint.cumulativeDistance + distanceToEnd,
-      });
-    }
-
-    // Calculate total path distance
-    const totalPathDistance = path[path.length - 1].cumulativeDistance;
-
-    // Calculate segment distance for equal spacing
-    const segmentDistance = totalPathDistance / (numPoints + 1);
-
-    // Generate points at equal distance intervals along the path
-    let lastInterpolatedPoint = {
-      lat: startPos.lat,
-      lon: startPos.lon,
-      height: startPos.height,
-      seconds: startPos.seconds,
-    };
-
-    for (let i = 1; i <= numPoints; i++) {
-      // Target distance from start
-      const targetDistance = i * segmentDistance;
-
-      // Find the segment in the path that contains the target distance
-      let segmentIdx = 0;
-      while (
-        segmentIdx < path.length - 1 &&
-        path[segmentIdx + 1].cumulativeDistance < targetDistance
-      ) {
-        segmentIdx++;
+        if (distToPrev >= targetDistance * 0.9) {
+          // Allow some tolerance
+          return { lat, lon, height, seconds };
+        }
       }
 
-      // If we've reached the end of the path, use the last point
-      if (segmentIdx >= path.length - 1) {
-        const lastPoint = path[path.length - 1];
-        const distFromPrev = this.haversineDistance(
-          lastInterpolatedPoint.lat,
-          lastInterpolatedPoint.lon,
-          lastPoint.lat,
-          lastPoint.lon
-        );
-
-        result.push({
-          lat: lastPoint.lat,
-          lon: lastPoint.lon,
-          height: lastPoint.height,
-          seconds: lastPoint.seconds,
-          distance_from_prev: distFromPrev,
-        });
-
-        lastInterpolatedPoint = {
-          lat: lastPoint.lat,
-          lon: lastPoint.lon,
-          height: lastPoint.height,
-          seconds: lastPoint.seconds,
-        };
-
-        continue;
-      }
-
-      // Get the two points that bracket the target distance
-      const p1 = path[segmentIdx];
-      const p2 = path[segmentIdx + 1];
-
-      // Calculate how far along the segment the target is
-      const segmentLength = p2.cumulativeDistance - p1.cumulativeDistance;
-      const segmentProgress =
-        (targetDistance - p1.cumulativeDistance) / segmentLength;
-
-      // Interpolate position along the segment
-      const interpolatedPoint = {
-        lat: p1.lat + segmentProgress * (p2.lat - p1.lat),
-        lon: p1.lon + segmentProgress * (p2.lon - p1.lon),
-        height: p1.height + segmentProgress * (p2.height - p1.height),
-        seconds: p1.seconds + segmentProgress * (p2.seconds - p1.seconds),
-      };
-
-      // Calculate distance from previous interpolated point
-      const distFromPrev = this.haversineDistance(
-        lastInterpolatedPoint.lat,
-        lastInterpolatedPoint.lon,
-        interpolatedPoint.lat,
-        interpolatedPoint.lon
-      );
-
-      result.push({
-        ...interpolatedPoint,
-        distance_from_prev: distFromPrev,
-      });
-
-      lastInterpolatedPoint = interpolatedPoint;
+      accumulatedDistance += segmentDistance;
     }
 
-    return result;
+    return null;
   }
 
   /**
@@ -1029,8 +792,6 @@ export class TriggerFixer {
         originalTriggers: eventsData.length,
         interpolatedTriggers: interpolatedData.length,
         flightDuration,
-        minDistance:
-          allDistances.length > 0 ? Math.min(...allDistances) : undefined,
         avgDistance:
           allDistances.length > 0
             ? allDistances.reduce((sum, d) => sum + d, 0) / allDistances.length

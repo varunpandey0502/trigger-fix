@@ -93,10 +93,19 @@ export default function Home() {
         triggerDistance ?? undefined
       );
 
-      // Set the minimum distance if it's not already set
-      if (results.stats.minDistance && !triggerDistance) {
-        setMinDistance(results.stats.minDistance);
-        setTriggerDistance(results.stats.minDistance);
+      // Set the minimum distance from the first 10 points if trigger distance isn't set
+      if (!triggerDistance) {
+        // Calculate distances from first 10 points
+        const firstTenDistances = results.eventsData
+          .slice(1, 11) // Take up to first 10 distances (skip first trigger as it has no previous)
+          .map((e) => e.distance_from_prev!)
+          .filter((d) => d !== undefined);
+
+        if (firstTenDistances.length > 0) {
+          const minDist = Math.min(...firstTenDistances);
+          setMinDistance(minDist);
+          setTriggerDistance(minDist);
+        }
       }
 
       setResults(results);
@@ -708,12 +717,12 @@ export default function Home() {
                       </CardHeader>
                       <CardContent>
                         <dl className="space-y-2">
-                          {results.stats.minDistance && (
+                          {minDistance && (
                             <div className="flex justify-between">
-                              <dt>Min interpolated distance:</dt>
+                              <dt>Min distance (first 10 triggers):</dt>
                               <dd>
                                 <Badge variant="outline">
-                                  {results.stats.minDistance.toFixed(1)}m
+                                  {minDistance.toFixed(1)}m
                                 </Badge>
                               </dd>
                             </div>
@@ -728,9 +737,9 @@ export default function Home() {
                               </dd>
                             </div>
                           )}
-                          {!results.stats.minDistance && (
+                          {!minDistance && (
                             <div className="text-muted-foreground">
-                              No interpolated triggers found
+                              No trigger distances available
                             </div>
                           )}
                         </dl>
