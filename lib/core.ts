@@ -698,7 +698,7 @@ export class TriggerFixer {
   }
 
   /**
-   * Find a point at specified distance from a reference point
+   * Find a point at specified distance from a reference point along the flight path
    */
   private findPointAtDistance(
     posData: PositionPoint[],
@@ -713,8 +713,27 @@ export class TriggerFixer {
   ): { lat: number; lon: number; height: number; seconds: number } | null {
     // Walk through position data to find point at desired distance
     let accumulatedDistance = 0;
+    let lastPoint = referencePoint;
 
-    for (let i = 0; i < posData.length - 1; i++) {
+    // Find the closest position point to our reference point
+    let startIndex = 0;
+    let minDistance = Infinity;
+
+    for (let i = 0; i < posData.length; i++) {
+      const dist = this.haversineDistance(
+        posData[i].lat!,
+        posData[i].lon!,
+        referencePoint.lat,
+        referencePoint.lon
+      );
+      if (dist < minDistance) {
+        minDistance = dist;
+        startIndex = i;
+      }
+    }
+
+    // Walk backwards through position data from the closest point
+    for (let i = startIndex; i < posData.length - 1; i++) {
       const currentPos = posData[i];
       const nextPos = posData[i + 1];
 
@@ -731,13 +750,13 @@ export class TriggerFixer {
         const remainingDistance = targetDistance - accumulatedDistance;
         const ratio = remainingDistance / segmentDistance;
 
-        // Interpolate position
-        const lat = nextPos.lat! + ratio * (currentPos.lat! - nextPos.lat!);
-        const lon = nextPos.lon! + ratio * (currentPos.lon! - nextPos.lon!);
+        // Interpolate position along the actual flight path
+        const lat = currentPos.lat! + ratio * (nextPos.lat! - currentPos.lat!);
+        const lon = currentPos.lon! + ratio * (nextPos.lon! - currentPos.lon!);
         const height =
-          nextPos.height + ratio * (currentPos.height - nextPos.height);
+          currentPos.height + ratio * (nextPos.height - currentPos.height);
         const seconds =
-          nextPos.seconds + ratio * (currentPos.seconds - nextPos.seconds);
+          currentPos.seconds + ratio * (nextPos.seconds - currentPos.seconds);
 
         // Check if this point is too close to the previous trigger
         const distToPrev = this.haversineDistance(
@@ -749,14 +768,91 @@ export class TriggerFixer {
 
         if (distToPrev >= targetDistance * 0.9) {
           // Allow some tolerance
-          return { lat, lon, height, seconds };
+          // Verify point is on flight path by checking distance to segment
+          const distToSegment = this.pointToSegmentDistance(
+            { lat, lon },
+            { lat: currentPos.lat!, lon: currentPos.lon! },
+            { lat: nextPos.lat!, lon: nextPos.lon! }
+          );
+
+          if (distToSegment < 1) {
+            // Within 1 meter of flight path
+            return { lat, lon, height, seconds };
+          }
         }
       }
 
       accumulatedDistance += segmentDistance;
+      lastPoint = currentPos;
     }
 
     return null;
+  }
+
+  /**
+   * Calculate the distance from a point to a line segment
+   */
+  private pointToSegmentDistance(
+    point: { lat: number; lon: number },
+    segStart: { lat: number; lon: number },
+    segEnd: { lat: number; lon: number }
+  ): number {
+    // Convert to cartesian coordinates for simpler math
+    // (This is an approximation that works for short distances)
+    const R = 6371000; // Earth's radius in meters
+    const p = {
+      x:
+        ((point.lon * Math.PI) / 180) *
+        R *
+        Math.cos((point.lat * Math.PI) / 180),
+      y: ((point.lat * Math.PI) / 180) * R,
+    };
+    const s = {
+      x:
+        ((segStart.lon * Math.PI) / 180) *
+        R *
+        Math.cos((segStart.lat * Math.PI) / 180),
+      y: ((segStart.lat * Math.PI) / 180) * R,
+    };
+    const e = {
+      x:
+        ((segEnd.lon * Math.PI) / 180) *
+        R *
+        Math.cos((segEnd.lat * Math.PI) / 180),
+      y: ((segEnd.lat * Math.PI) / 180) * R,
+    };
+
+    // Calculate the distance from point to line segment
+    const A = p.x - s.x;
+    const B = p.y - s.y;
+    const C = e.x - s.x;
+    const D = e.y - s.y;
+
+    const dot = A * C + B * D;
+    const lenSq = C * C + D * D;
+    let param = -1;
+
+    if (lenSq !== 0) {
+      param = dot / lenSq;
+    }
+
+    let xx, yy;
+
+    if (param < 0) {
+      xx = s.x;
+      yy = s.y;
+    } else if (param > 1) {
+      xx = e.x;
+      yy = e.y;
+    } else {
+      xx = s.x + param * C;
+      yy = s.y + param * D;
+    }
+
+    const dx = p.x - xx;
+    const dy = p.y - yy;
+
+    return Math.sqrt(dx * dx + dy * dy);
   }
 
   /**

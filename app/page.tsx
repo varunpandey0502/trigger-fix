@@ -47,10 +47,7 @@ export default function Home() {
   const [minDistance, setMinDistance] = useState<number | null>(null);
 
   // Initialize the TriggerFixer with default config
-  const triggerFixer = new TriggerFixer({
-    ...DEFAULT_CONFIG,
-    threshold: triggerDistance,
-  });
+  const triggerFixer = new TriggerFixer(DEFAULT_CONFIG);
 
   const handlePosFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -562,9 +559,9 @@ export default function Home() {
                               const data = payload[0].payload;
                               return (
                                 <div className="bg-white p-2 border rounded shadow-sm">
-                                  <p className="font-bold">{`Trigger ${
-                                    data.index || "N/A"
-                                  }`}</p>
+                                  <p className="font-bold">{`${
+                                    data.type || "Trigger"
+                                  } ${data.index || "N/A"}`}</p>
                                   <p>{`Latitude: ${data.lat.toFixed(6)}°`}</p>
                                   <p>{`Longitude: ${data.lon.toFixed(6)}°`}</p>
                                   {data.distance_from_prev !== undefined && (
@@ -580,12 +577,13 @@ export default function Home() {
                         />
                         <Legend />
 
-                        {/* Original triggers with index */}
+                        {/* Original triggers */}
                         <Scatter
                           name="Original Triggers"
                           data={prepareDataForChart(results.eventsData).map(
                             (point, idx) => ({
                               ...point,
+                              type: "Original Trigger",
                               index: idx + 1,
                             })
                           )}
@@ -612,7 +610,12 @@ export default function Home() {
                         {/* Interpolated triggers */}
                         <Scatter
                           name="Interpolated Triggers"
-                          data={prepareDataForChart(results.interpolatedData)}
+                          data={prepareDataForChart(
+                            results.interpolatedData
+                          ).map((point) => ({
+                            ...point,
+                            type: "Interpolated Trigger",
+                          }))}
                           fill={DEFAULT_CONFIG.interpolatedColor}
                           shape="diamond"
                           isAnimationActive={false}
